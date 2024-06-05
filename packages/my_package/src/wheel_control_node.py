@@ -29,17 +29,23 @@ class WheelControlNode(DTROS):
         # read the pixel counts from the message
         self.yellow_pixel_count = data.data[0]
         self.white_pixel_count = data.data[1]
-        rospy.loginfo(f"Received yellow pixel count: {self.yellow_pixel_count}")
-        rospy.loginfo(f"Received white pixel count: {self.white_pixel_count}")
+    #    rospy.loginfo(f"Received yellow pixel count: {self.yellow_pixel_count}")
+     #   rospy.loginfo(f"Received white pixel count: {self.white_pixel_count}")
 
     def run(self):
         rate = rospy.Rate(10)  # 10 Hz
         while not rospy.is_shutdown():
             # Adjust wheel velocities based on the pixel counts
             # Example logic: if more yellow pixels, turn right; if more white pixels, turn left
-            self._vel_left = self.yellow_pixel_count
-            self._vel_right = self.white_pixel_count
+            self._vel_left = max(self.yellow_pixel_count,0.00001)
+            self._vel_right = max(self.white_pixel_count,0.00001)
 
+            if self._vel_left < 0.02:
+                self._vel_right = self._vel_right  + 0.05
+            if self._vel_right < 0.02:
+                self._vel_left = self._vel_left + 0.05
+            print(f"Sent self._vel_left { self._vel_left}")
+            print(f"Sent self._vel_right { self._vel_right}")
             # Create the message
             message = WheelsCmdStamped()
             message.vel_left = self._vel_left

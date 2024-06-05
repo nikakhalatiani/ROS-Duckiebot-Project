@@ -99,7 +99,7 @@ class CameraReaderNode(DTROS):
         self.white_pixel_count = np.count_nonzero(white_edges)
 
         # Yellow color scale to white
-        mul_yellow = 2.5
+        mul_yellow = 2
         self.yellow_pixel_count = self.yellow_pixel_count * mul_yellow
 
         # Scale the pixel count to float values between 0 and 1
