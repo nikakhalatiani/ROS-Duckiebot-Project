@@ -4,14 +4,7 @@ import os
 import rospy
 from duckietown.dtros import DTROS, NodeType
 from duckietown_msgs.msg import WheelsCmdStamped
-
-
-# throttle and direction for each wheel
-THROTTLE_LEFT = 0.5        # 50% throttle
-DIRECTION_LEFT = 1         # forward
-THROTTLE_RIGHT = 0.3       # 30% throttle
-DIRECTION_RIGHT = -1       # backward
-
+from std_msgs.msg import Float64MultiArray
 
 class WheelControlNode(DTROS):
 
@@ -21,28 +14,52 @@ class WheelControlNode(DTROS):
         # static parameters
         vehicle_name = os.environ['VEHICLE_NAME']
         wheels_topic = f"/{vehicle_name}/wheels_driver_node/wheels_cmd"
-        # form the message
-        self._vel_left = THROTTLE_LEFT * DIRECTION_LEFT
-        self._vel_right = THROTTLE_RIGHT * DIRECTION_RIGHT
+        pixel_counts_topic = f"/{vehicle_name}/camera_node/pixel_counts"
+        # initial wheel velocities
+        self._vel_left = 0.0
+        self._vel_right = 0.0
         # construct publisher
         self._publisher = rospy.Publisher(wheels_topic, WheelsCmdStamped, queue_size=1)
+        # construct subscriber to pixel counts
+        self._subscriber = rospy.Subscriber(pixel_counts_topic, Float64MultiArray, self.pixel_counts_callback)
+        self.yellow_pixel_count = 0.0
+        self.white_pixel_count = 0.0
+
+    def pixel_counts_callback(self, data):
+        # read the pixel counts from the message
+        self.yellow_pixel_count = data.data[0]
+        self.white_pixel_count = data.data[1]
+        rospy.loginfo(f"Received yellow pixel count: {self.yellow_pixel_count}")
+        rospy.loginfo(f"Received white pixel count: {self.white_pixel_count}")
 
     def run(self):
-        # publish 10 messages every second (10 Hz)
-        rate = rospy.Rate(0.1)
-        message = WheelsCmdStamped(vel_left=self._vel_left, vel_right=self._vel_right)
+        rate = rospy.Rate(10)  # 10 Hz
         while not rospy.is_shutdown():
+            # Adjust wheel velocities based on the pixel counts
+            # Example logic: if more yellow pixels, turn right; if more white pixels, turn left
+            self._vel_left = self.yellow_pixel_count
+            self._vel_right = self.white_pixel_count
+
+            # Create the message
+            message = WheelsCmdStamped()
+            message.vel_left = self._vel_left
+            message.vel_right = self._vel_right
+
+            # Publish the wheel velocities
             self._publisher.publish(message)
+
             rate.sleep()
 
     def on_shutdown(self):
-        stop = WheelsCmdStamped(vel_left=0, vel_right=0)
+        stop = WheelsCmdStamped()
+        stop.vel_left = 0
+        stop.vel_right = 0
         self._publisher.publish(stop)
 
 if __name__ == '__main__':
     # create the node
     node = WheelControlNode(node_name='wheel_control_node')
-    # run node
-    node.run()
     # keep the process from terminating
+    rospy.on_shutdown(node.on_shutdown)
+    node.run()
     rospy.spin()
