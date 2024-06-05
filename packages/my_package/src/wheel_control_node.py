@@ -16,29 +16,29 @@ class WheelControlNode(DTROS):
         wheels_topic = f"/{vehicle_name}/wheels_driver_node/wheels_cmd"
         pixel_counts_topic = f"/{vehicle_name}/camera_node/pixel_counts"
         # initial wheel velocities
-        self._vel_left = 0.0
-        self._vel_right = 0.0
+        self._vel_left = 0
+        self._vel_right = 0
         # construct publisher
         self._publisher = rospy.Publisher(wheels_topic, WheelsCmdStamped, queue_size=1)
         # construct subscriber to pixel counts
         self._subscriber = rospy.Subscriber(pixel_counts_topic, Float64MultiArray, self.pixel_counts_callback)
-        self.yellow_pixel_count = 0.0
-        self.white_pixel_count = 0.0
+        self.left_motor = 0
+        self.right_motor = 0
 
     def pixel_counts_callback(self, data):
         # read the pixel counts from the message
-        self.yellow_pixel_count = data.data[0]
-        self.white_pixel_count = data.data[1]
-        rospy.loginfo(f"Received yellow pixel count: {self.yellow_pixel_count}")
-        rospy.loginfo(f"Received white pixel count: {self.white_pixel_count}")
+        self.left_motor = data.data[0]
+        self.right_motor = data.data[1]
+        rospy.loginfo(f"Received left {self.left_motor}")
+        rospy.loginfo(f"Received right: {self.right_motor}")
 
     def run(self):
         rate = rospy.Rate(10)  # 10 Hz
         while not rospy.is_shutdown():
             # Adjust wheel velocities based on the pixel counts
             # Example logic: if more yellow pixels, turn right; if more white pixels, turn left
-            self._vel_left = self.yellow_pixel_count
-            self._vel_right = self.white_pixel_count
+            self._vel_left = self.left_motor
+            self._vel_right = self.right_motor
 
             # Create the message
             message = WheelsCmdStamped()

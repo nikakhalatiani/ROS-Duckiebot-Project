@@ -7,6 +7,7 @@ from sensor_msgs.msg import CompressedImage
 import numpy as np
 import cv2
 from cv_bridge import CvBridge
+from std_msgs.msg import Float64
 from std_msgs.msg import Float64MultiArray
 
 class CameraReaderNode(DTROS):
@@ -25,102 +26,104 @@ class CameraReaderNode(DTROS):
         # construct subscriber
         self.sub = rospy.Subscriber(self._camera_topic, CompressedImage, self.callback)
         # construct publisher
-        self._publisher = rospy.Publisher(f"/{self._vehicle_name}/camera_node/pixel_counts", Float64MultiArray, queue_size=10)
+        self._publisher = rospy.Publisher(f"/{self._vehicle_name}/camera_node/pixel_counts", Float64MultiArray, queue_size=1)
 
-        # Initialize attributes to store pixel counts
-        self.yellow_pixel_count = 0
-        self.white_pixel_count = 0
+
+        # self.left_motor  = rospy.Publisher(f"/{self._vehicle_name}/left_wheel_encoder_node/tick", Float64, queue_size=1)
+        # self.right_motor = rospy.Publisher(f"/{self._vehicle_name}/right_wheel_encoder_node/tick", Float64, queue_size=1)
+
+        self.left_tick = 0
+        self.right_tick = 0
+        self.left = 0.2
+        self.right = 0.2
+        self.gain = 0.2
+        self.const = 0.3
 
     def callback(self, msg):
         # convert JPEG bytes to CV image
         image = self._bridge.compressed_imgmsg_to_cv2(msg)
+        image = cv2.bilateralFilter(image, 12, 125, 155)
         img_hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        img_hsl = cv2.cvtColor(image, cv2.COLOR_BGR2HLS)
 
         # Define color range for yellow
         yellow_lower_color = np.array([9, 129, 155])
         yellow_upper_color = np.array([83, 255, 255])
         # Define color range for white
-        white_lower_color = np.array([0, 0, 185])
-        white_upper_color = np.array([179, 70, 255])
+        white_lower_color = np.array([0, 173, 0])
+        white_upper_color = np.array([179, 255, 255])
 
         # Create masks for yellow and white colors
         yellow_mask = cv2.inRange(img_hsv, yellow_lower_color, yellow_upper_color)
-        white_mask = cv2.inRange(img_hsv, white_lower_color, white_upper_color)
+        white_mask = cv2.inRange(img_hsl, white_lower_color, white_upper_color)
 
         # Apply the masks to the original image to keep only yellow and white regions
         yellow_filtered = cv2.bitwise_and(image, image, mask=yellow_mask)
         white_filtered = cv2.bitwise_and(image, image, mask=white_mask)
 
-        # Convert the filtered images to grayscale
-        yellow_gray = cv2.cvtColor(yellow_filtered, cv2.COLOR_BGR2GRAY)
-        white_gray = cv2.cvtColor(white_filtered, cv2.COLOR_BGR2GRAY)
+        # Dilate Yellow
+        kernel = np.ones((7, 7), np.uint8)
+        yellow_filtered = cv2.dilate(yellow_filtered, kernel, iterations=2)
+        
+        # Crop the image to the lower half
+        yellow_filtered[:240, :] = 0
+        white_filtered[:240, :] = 0
+        white_filtered[:, :200] = 0
+        
+        # Combine the yellow and white images
+        combined = cv2.bitwise_or(yellow_filtered, white_filtered)
+     
 
-        # Apply Gaussian blur to the grayscale images
-        yellow_blur = cv2.GaussianBlur(yellow_gray, (5, 5), 0)
-        white_blur = cv2.GaussianBlur(white_gray, (5, 5), 0)
+        white_color_count = np.count_nonzero(white_filtered)
+        yellow_color_count = np.count_nonzero(yellow_filtered)
 
-        # Apply the Sobel operator to the blurred images
-        sobelx_yellow = cv2.Sobel(yellow_blur, cv2.CV_64F, 1, 0)
-        sobely_yellow = cv2.Sobel(yellow_blur, cv2.CV_64F, 0, 1)
-        sobelx_white = cv2.Sobel(white_blur, cv2.CV_64F, 1, 0)
-        sobely_white = cv2.Sobel(white_blur, cv2.CV_64F, 0, 1)
+        # Normilize the pixel count
+        white_color_count = white_color_count / (640 * 480)
+        yellow_color_count = yellow_color_count / (640 * 480)
 
-        # Compute the magnitude of the gradients
-        Gmag_yellow = np.sqrt(sobelx_yellow**2 + sobely_yellow**2)
-        Gmag_white = np.sqrt(sobelx_white**2 + sobely_white**2)
+        # Convert to signal
+        left_motor = self.const + self.gain * (self.left * white_color_count)
+        right_motor = self.const + self.gain * (self.right * yellow_color_count)
 
-        # Threshold the gradient magnitude
-        threshold = 95
-        mask_mag_yellow = (Gmag_yellow > threshold)
-        mask_mag_white = (Gmag_white > threshold)
+        if white_color_count > yellow_color_count:
+            print("White is more")
+            if left_motor > 0.2:
+                left_motor = left_motor - 0.2
+            else:
+                left_motor = left_motor
+            right_motor += 0.25
+            
+        if yellow_color_count > white_color_count:
+            print("Yellow is more")
+            if right_motor > 0.2:
+                right_motor = right_motor - 0.2
+            else:
+                right_motor = right_motor
+            left_motor += 0.25
 
-        # Combine masks with the original image to keep only yellow on the left and white on the right
-        height, width = image.shape[:2]
-        mask_left = np.zeros((height, width), dtype=bool)
-        mask_left[:, :width//2] = True
-        mask_right = np.zeros((height, width), dtype=bool)
-        mask_right[:, width//2:] = True
 
-        yellow_edge_mask = mask_mag_yellow & mask_left
-        white_edge_mask = mask_mag_white & mask_right
+        self.left_tick = left_motor
+        self.right_tick = right_motor
 
-        # Apply the edge masks to the original image
-        yellow_edges = np.uint8(yellow_edge_mask * 255)
-        white_edges = np.uint8(white_edge_mask * 255)
-
-        combined_edges = cv2.bitwise_or(yellow_edges, white_edges)
-        final_image = cv2.bitwise_and(image, image, mask=combined_edges)
-
-        # Make the upper half of the final image black
-        final_image[:height//2, :] = 0
-
-        # Count and print the amount of yellow and white pixels
-        self.yellow_pixel_count = np.count_nonzero(yellow_edges)
-        self.white_pixel_count = np.count_nonzero(white_edges)
-
-        # Yellow color scale to white
-        mul_yellow = 2.5
-        self.yellow_pixel_count = self.yellow_pixel_count * mul_yellow
-
-        # Scale the pixel count to float values between 0 and 1
-        self.yellow_pixel_count = self.yellow_pixel_count / (height * width)
-        self.white_pixel_count = self.white_pixel_count / (height * width)
-
-        # Display the results
-        cv2.imshow(self._window, final_image)
+        cv2.imshow("Combined", combined)
         cv2.waitKey(1)
+
+        
 
     def run(self):
         rate = rospy.Rate(10)  # 10 Hz
         while not rospy.is_shutdown():
             # Create a Float64MultiArray message to publish the values
             pixel_counts = Float64MultiArray()
-            pixel_counts.data = [self.yellow_pixel_count, self.white_pixel_count]
+            pixel_counts.data = [self.left_tick, self.right_tick]
 
             # Publish the pixel counts
             self._publisher.publish(pixel_counts)
             
             rate.sleep()
+
+    def nothing(self):
+        pass
 
 if __name__ == '__main__':
     # create the node
