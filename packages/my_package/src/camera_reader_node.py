@@ -119,7 +119,8 @@ class CameraReaderNode(DTROS):
 
             # Publish the pixel counts
             self._publisher.publish(pixel_counts)
-            
+            # sabaaa
+            # saba2
             rate.sleep()
 
 if __name__ == '__main__':
