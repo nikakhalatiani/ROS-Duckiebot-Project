@@ -8,7 +8,6 @@ import numpy as np
 import cv2
 from cv_bridge import CvBridge
 from std_msgs.msg import Float64MultiArray
-import time
 
 class CameraReaderNode(DTROS):
 
@@ -28,29 +27,26 @@ class CameraReaderNode(DTROS):
         # construct publisher
         self._publisher = rospy.Publisher(f"/{self._vehicle_name}/camera_node/pixel_counts", Float64MultiArray, queue_size=1)
 
+
+        # self.left_motor  = rospy.Publisher(f"/{self._vehicle_name}/left_wheel_encoder_node/tick", Float64, queue_size=1)
+        # self.right_motor = rospy.Publisher(f"/{self._vehicle_name}/right_wheel_encoder_node/tick", Float64, queue_size=1)
+
         self.left_tick = 0
         self.right_tick = 0
-        self.state_change_time = None  # Time when the state changed
-        self.specific_command_duration = 4  # Duration for executing specific commands
-        self.state = "normal"  # Current state of the robot
-        self.state_start_time = None  # Time when the current state started
-        self.state_index = 0  # Index to track the current step in the predefined sequence
-        self.predefined_steps = [
-            ("turn_left", 0.5),  # (action, duration in seconds)
-            ("go_straight", 1),
-            ("turn_right", 0.5),
-            ("go_straight", 1),
-            ("turn_right", 0.5),
-            ("go_straight", 1),
-            ("turn_left", 0.5)
-        ]
+        self.left = 0.2
+        self.right = 0.2
+        self.gain = 0.2
+        self.const = 0.3
+        self.state = 'normal'
 
     def callback(self, msg):
         # convert JPEG bytes to CV image
         image = self._bridge.compressed_imgmsg_to_cv2(msg)
+        image_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         image = cv2.bilateralFilter(image, 12, 125, 155)
         img_hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
         img_hsl = cv2.cvtColor(image, cv2.COLOR_BGR2HLS)
+
 
         # Define color range for yellow
         yellow_lower_color = np.array([9, 129, 155])
@@ -78,73 +74,60 @@ class CameraReaderNode(DTROS):
         
         # Combine the yellow and white images
         combined = cv2.bitwise_or(yellow_filtered, white_filtered)
-
-        # Try to find the circle grid in the image
-        image_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        pattern_size = (7, 3)  # Adjust the pattern size based on your specific grid
-        ret, centers = cv2.findCirclesGrid(image_gray, pattern_size, cv2.CALIB_CB_SYMMETRIC_GRID)
-
-        if ret:
-            print("Circles grid detected, triggering state change")
-            self.state_change_time = time.time()
-            self.state = "predefined_steps"
-            self.state_index = 0
-            self.state_start_time = time.time()
-            image = cv2.drawChessboardCorners(image, pattern_size, centers, ret)
+     
 
         white_color_count = np.count_nonzero(white_filtered)
         yellow_color_count = np.count_nonzero(yellow_filtered)
 
-        # Normalize the pixel count
+        # Normilize the pixel count
         white_color_count = white_color_count / (640 * 480)
         yellow_color_count = yellow_color_count / (640 * 480)
 
-        # Check if in specific command execution state
-        if self.state == "predefined_steps":
-            current_time = time.time()
-            if current_time - self.state_start_time > self.predefined_steps[self.state_index][1]:
-                self.state_index += 1
-                self.state_start_time = current_time
-                if self.state_index >= len(self.predefined_steps):
-                    self.state = "normal"
+        # image_gray = cv2.bilateralFilter(image_gray, 12, 125, 155)
+        pattern_size = (7, 3)
+        ret, centers = cv2.findCirclesGrid(image_gray, pattern_size, flags=cv2.CALIB_CB_SYMMETRIC_GRID)
 
-            if self.state == "predefined_steps":
-                action = self.predefined_steps[self.state_index][0]
-                if action == "turn_left":
-                    self.left_tick = -0.2
-                    self.right_tick = 0.2
-                elif action == "go_straight":
-                    self.left_tick = 0.5
-                    self.right_tick = 0.5
-                elif action == "turn_right":
-                    self.left_tick = 0.2
-                    self.right_tick = -0.2
-        else:
-            # Convert to signal
-            left_motor = 0.3 + 0.2 * (0.2 * white_color_count)
-            right_motor = 0.3 + 0.2 * (0.2 * yellow_color_count)
+        if ret:
+            print("Found")
+            # Calculate the bounding box of the grid
+            centers = centers.reshape(-1, 2)
+            x, y, w, h = cv2.boundingRect(centers)
+            # Draw the rectangle around the grid
+            cv2.rectangle(image, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
-            if white_color_count > yellow_color_count:
-                print("White is more")
-                if left_motor > 0.2:
-                    left_motor = left_motor - 0.2
-                else:
-                    left_motor = left_motor
-                right_motor += 0.25
-                
-            if yellow_color_count > white_color_count:
-                print("Yellow is more")
-                if right_motor > 0.2:
-                    right_motor = right_motor - 0.2
-                else:
-                    right_motor = right_motor
-                left_motor += 0.25
+        # Display the image
+        cv2.imshow("Detected Grid", image)
+        cv2.waitKey(1)
+        
 
-            self.left_tick = left_motor
-            self.right_tick = right_motor
+        # Convert to signal
+        left_motor = self.const + self.gain * (self.left * white_color_count)
+        right_motor = self.const + self.gain * (self.right * yellow_color_count)
+
+        if white_color_count > yellow_color_count:
+            print("White is more")
+            if left_motor > 0.2:
+                left_motor = left_motor - 0.2
+            else:
+                left_motor = left_motor
+            right_motor += 0.25
+            
+        if yellow_color_count > white_color_count:
+            print("Yellow is more")
+            if right_motor > 0.2:
+                right_motor = right_motor - 0.2
+            else:
+                right_motor = right_motor
+            left_motor += 0.25
+
+
+        self.left_tick = left_motor
+        self.right_tick = right_motor
 
         cv2.imshow("Combined", combined)
         cv2.waitKey(1)
+
+        
 
     def run(self):
         rate = rospy.Rate(10)  # 10 Hz
