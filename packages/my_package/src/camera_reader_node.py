@@ -28,28 +28,22 @@ class CameraReaderNode(DTROS):
         # construct publisher
         self._publisher = rospy.Publisher(f"/{self._vehicle_name}/camera_node/pixel_counts", Float64MultiArray, queue_size=1)
 
-
-        # self.left_motor  = rospy.Publisher(f"/{self._vehicle_name}/left_wheel_encoder_node/tick", Float64, queue_size=1)
-        # self.right_motor = rospy.Publisher(f"/{self._vehicle_name}/right_wheel_encoder_node/tick", Float64, queue_size=1)
-
         self.left_tick = 0
         self.right_tick = 0
-        self.blue_threshold = 0.04  # Define a threshold for the blue count
         self.state_change_time = None  # Time when the state changed
-        self.specific_command_duration = 4.1 # Duration for executing specific commands
+        self.specific_command_duration = 4  # Duration for executing specific commands
         self.state = "normal"  # Current state of the robot
         self.state_start_time = None  # Time when the current state started
         self.state_index = 0  # Index to track the current step in the predefined sequence
         self.predefined_steps = [
-            ("turn_left", 0.25),  # (action, duration in seconds)
+            ("turn_left", 0.5),  # (action, duration in seconds)
             ("go_straight", 1),
-            ("turn_right", 0.3),
+            ("turn_right", 0.5),
             ("go_straight", 1),
-            ("turn_right", 0.3),
+            ("turn_right", 0.5),
             ("go_straight", 1),
-            ("turn_left", 0.25)
+            ("turn_left", 0.5)
         ]
-
 
     def callback(self, msg):
         # convert JPEG bytes to CV image
@@ -65,19 +59,13 @@ class CameraReaderNode(DTROS):
         white_lower_color = np.array([0, 173, 0])
         white_upper_color = np.array([179, 255, 255])
 
-        # Defind color range for blue
-        blue_lower_color = np.array([113, 133, 0])
-        blue_upper_color = np.array([179, 255, 255])
-
         # Create masks for yellow and white colors
         yellow_mask = cv2.inRange(img_hsv, yellow_lower_color, yellow_upper_color)
         white_mask = cv2.inRange(img_hsl, white_lower_color, white_upper_color)
-        blue_mask = cv2.inRange(img_hsv, blue_lower_color, blue_upper_color)
 
         # Apply the masks to the original image to keep only yellow and white regions
         yellow_filtered = cv2.bitwise_and(image, image, mask=yellow_mask)
         white_filtered = cv2.bitwise_and(image, image, mask=white_mask)
-        blue_filtered = cv2.bitwise_and(image, image, mask=blue_mask)
 
         # Dilate Yellow
         kernel = np.ones((7, 7), np.uint8)
@@ -87,29 +75,29 @@ class CameraReaderNode(DTROS):
         yellow_filtered[:240, :] = 0
         white_filtered[:240, :] = 0
         white_filtered[:, :200] = 0
-        blue_filtered[:140, :] = 0
-        blue_filtered[180:, ] = 0
         
         # Combine the yellow and white images
-        white_and_yellow = cv2.bitwise_or(yellow_filtered, white_filtered)
-        combined = cv2.bitwise_or(white_and_yellow, blue_filtered)
-     
+        combined = cv2.bitwise_or(yellow_filtered, white_filtered)
 
-        white_color_count = np.count_nonzero(white_filtered)
-        yellow_color_count = np.count_nonzero(yellow_filtered)
-        blue_color_count = np.count_nonzero(blue_filtered)
+        # Try to find the circle grid in the image
+        image_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        pattern_size = (7, 3)  # Adjust the pattern size based on your specific grid
+        ret, centers = cv2.findCirclesGrid(image_gray, pattern_size, cv2.CALIB_CB_SYMMETRIC_GRID)
 
-        # Normilize the pixel count
-        white_color_count = white_color_count / (640 * 480)
-        yellow_color_count = yellow_color_count / (640 * 480)
-        blue_color_count = blue_color_count / (640 * 480)
-
-        if blue_color_count > self.blue_threshold:
-            print("Blue detected in the center region, triggering state change")
+        if ret:
+            print("Circles grid detected, triggering state change")
             self.state_change_time = time.time()
             self.state = "predefined_steps"
             self.state_index = 0
             self.state_start_time = time.time()
+            image = cv2.drawChessboardCorners(image, pattern_size, centers, ret)
+
+        white_color_count = np.count_nonzero(white_filtered)
+        yellow_color_count = np.count_nonzero(yellow_filtered)
+
+        # Normalize the pixel count
+        white_color_count = white_color_count / (640 * 480)
+        yellow_color_count = yellow_color_count / (640 * 480)
 
         # Check if in specific command execution state
         if self.state == "predefined_steps":
@@ -133,8 +121,8 @@ class CameraReaderNode(DTROS):
                     self.right_tick = -0.2
         else:
             # Convert to signal
-            left_motor = 0.3+ 0.2 * (0.2 * white_color_count)
-            right_motor = 0.3 + 0.2* (0.2 * yellow_color_count)
+            left_motor = 0.3 + 0.2 * (0.2 * white_color_count)
+            right_motor = 0.3 + 0.2 * (0.2 * yellow_color_count)
 
             if white_color_count > yellow_color_count:
                 print("White is more")
@@ -155,32 +143,8 @@ class CameraReaderNode(DTROS):
             self.left_tick = left_motor
             self.right_tick = right_motor
 
-
-        # bart's code
-        # if white_color_count > yellow_color_count:
-        #     print("White is more")
-        #     if left_motor > 0.25:
-        #         left_motor = left_motor - 0.2
-        #     else:
-        #         left_motor = left_motor
-        #     right_motor += 0.05
-            
-        # if yellow_color_count > white_color_count:
-        #     print("Yellow is more")
-        #     if right_motor > 0.2:
-        #         right_motor = right_motor - 0.25
-        #     else:
-        #         right_motor = right_motor
-        #     left_motor += 0.05
-
-
-        # self.left_tick = 0
-        # self.right_tick = 0
-
         cv2.imshow("Combined", combined)
         cv2.waitKey(1)
-
-        
 
     def run(self):
         rate = rospy.Rate(10)  # 10 Hz
